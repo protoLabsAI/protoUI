@@ -28,6 +28,9 @@ services:
       # Set START_VLLM=0 and LLM_URL to use external LLM
       - START_VLLM=${START_VLLM:-1}
       - LLM_URL=${LLM_URL:-}
+    networks:
+      - default
+      - gateway
     deploy:
       resources:
         reservations:
@@ -35,3 +38,8 @@ services:
             - driver: nvidia
               device_ids: ["${NVIDIA_VISIBLE_DEVICES:-0}"]
               capabilities: [gpu]
+
+networks:
+  gateway:
+    external: true
+    name: ai_default
