@@ -21,7 +21,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install deps (layer cached separately from source)
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir $(python3 -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(' '.join(d['project']['dependencies']))")
 
 # Install spacy model for Kokoro
 RUN pip install --no-cache-dir \

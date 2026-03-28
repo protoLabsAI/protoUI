@@ -1,5 +1,7 @@
 # protoVoice
 
+![protoVoice](https://i.ibb.co/ynptrxys/Screenshot-2026-03-27-at-5-17-20-PM.png)
+
 Sub-200ms real-time voice agent. Speak and get spoken responses faster than human conversational turn-taking.
 
 ```
