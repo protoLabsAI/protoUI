@@ -35,6 +35,15 @@ def load_skills(skills_dir: Path | str = SKILLS_DIR) -> list:
     default_model = os.environ.get("LLM_SERVED_NAME", "local")
     default_llm_url = os.environ.get("LLM_URL", "http://localhost:8100/v1")
 
+    voice_preamble = (
+        "You are speaking directly to the user through a voice interface. "
+        "Your response will be read aloud by a text-to-speech engine, so you must follow these rules strictly: "
+        "never use markdown, bullet points, numbered lists, headers, code blocks, or any formatting. "
+        "Never use emojis, symbols, or special unicode characters — they will be spoken literally and sound broken. "
+        "Speak in casual, natural, conversational sentences as if you are talking out loud. "
+        "Keep responses short: 1 to 3 sentences unless more detail is truly necessary. "
+    )
+
     skills = []
     for path in sorted(skills_dir.glob("*.md")):
         if path.name.startswith("_"):
@@ -45,7 +54,7 @@ def load_skills(skills_dir: Path | str = SKILLS_DIR) -> list:
                 slug=str(meta.get("slug", path.stem)),
                 name=str(meta.get("name", path.stem.replace("_", " ").title())),
                 description=str(meta.get("description", "")),
-                system_prompt=body,
+                system_prompt=voice_preamble + body,
                 voice=str(meta.get("voice", default_voice)),
                 lang=str(meta.get("lang", default_lang)),
                 tools=list(meta.get("tools") or []),

@@ -51,18 +51,24 @@ KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
 KOKORO_LANG = os.environ.get("KOKORO_LANG", "a")
 START_VLLM = os.environ.get("START_VLLM", "1") == "1"
 
-CHAT_SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", (
-    "You are a helpful voice assistant. Keep responses concise — 1-3 sentences max. "
-    "Be conversational and natural. Do not use markdown, bullet points, or formatting. "
-    "Respond as if speaking out loud."
+VOICE_PREAMBLE = (
+    "You are speaking directly to the user through a voice interface. "
+    "Your response will be read aloud by a text-to-speech engine, so you must follow these rules strictly: "
+    "never use markdown, bullet points, numbered lists, headers, code blocks, or any formatting. "
+    "Never use emojis, symbols, or special unicode characters — they will be spoken literally and sound broken. "
+    "Speak in casual, natural, conversational sentences as if you are talking out loud. "
+    "Keep responses short: 1 to 3 sentences unless more detail is truly necessary. "
+)
+
+CHAT_SYSTEM_PROMPT = VOICE_PREAMBLE + os.environ.get("SYSTEM_PROMPT", (
+    "You are a helpful voice assistant. Be warm, direct, and concise."
 ))
 
-AGENT_SYSTEM_PROMPT = (
+AGENT_SYSTEM_PROMPT = VOICE_PREAMBLE + (
     "You are a helpful voice assistant with access to tools for searching the web, "
     "doing calculations, and checking the current date and time. "
     "Use tools when needed to give accurate answers. "
-    "After getting tool results, respond in 1-2 concise spoken sentences. "
-    "Do not use markdown or formatting."
+    "After getting tool results, respond in 1 to 2 spoken sentences."
 )
 
 # Maps voice names to their Kokoro lang code
@@ -283,28 +289,41 @@ def build_ui(skills):
         agent.clear_history()
 
     # ------------------------------------------------------------------
+    # JS helpers — pure client-side drawer toggle (no server round-trip)
+    # ------------------------------------------------------------------
+    _JS_OPEN  = "() => { const d=document.getElementById('pv-drawer'); if(d) d.style.transform='translateX(0)'; }"
+    _JS_CLOSE = "() => { const d=document.getElementById('pv-drawer'); if(d) d.style.transform='translateX(110%)'; }"
+
+    # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
     with gr.Blocks(
         title="protoVoice",
         css="""
-        .header-row { align-items: center !important; gap: 12px; }
-        .header-row h2 { margin: 0; }
+        .pv-header { align-items: center !important; }
+        .pv-header h2 { margin: 0 !important; flex: 1; }
+        #pv-menu-btn { min-width: 40px !important; }
+        #pv-drawer {
+            position: fixed !important;
+            top: 0 !important; right: 0 !important;
+            width: 300px !important; height: 100vh !important;
+            transform: translateX(110%) !important;
+            transition: transform 0.25s ease !important;
+            background: var(--background-fill-primary) !important;
+            border-left: 1px solid var(--border-color-primary) !important;
+            box-shadow: -8px 0 32px rgba(0,0,0,0.18) !important;
+            z-index: 9999 !important;
+            overflow-y: auto !important;
+            padding: 16px !important;
+        }
         #transcript-col { margin-top: 8px; }
         """,
     ) as demo:
 
-        with gr.Row(elem_classes="header-row"):
+        # Header: title + hamburger
+        with gr.Row(elem_classes="pv-header"):
             gr.Markdown("## protoVoice")
-            mode_dd = gr.Dropdown(
-                choices=mode_choices,
-                value="chat",
-                label=None,
-                show_label=False,
-                scale=0,
-                min_width=180,
-                interactive=True,
-            )
+            menu_btn = gr.Button("☰", elem_id="pv-menu-btn", scale=0, size="sm", variant="secondary")
 
         # Wake word input — shown only when mode = wake_word
         wake_word_box = gr.Textbox(
@@ -339,24 +358,37 @@ def build_ui(skills):
             )
             clear_transcript_btn = gr.Button("Clear transcript", size="sm", variant="secondary")
 
-        # Settings accordion
-        with gr.Accordion("Settings", open=False):
-            gr.Markdown("**VAD**")
+        # Side drawer — floats over the page, hidden by default
+        with gr.Column(elem_id="pv-drawer"):
             with gr.Row():
-                speech_thresh = gr.Slider(
-                    0.0, 1.0, value=0.1, step=0.05,
-                    label="Speech threshold",
-                    info="Higher = less sensitive",
-                )
-                start_thresh = gr.Slider(
-                    0.0, 1.0, value=0.5, step=0.05,
-                    label="Start threshold",
-                )
-                chunk_dur = gr.Slider(
-                    0.2, 1.2, value=0.6, step=0.1,
-                    label="Chunk duration (s)",
-                    info="Latency vs accuracy",
-                )
+                gr.Markdown("### Settings")
+                close_btn = gr.Button("✕", scale=0, size="sm", variant="secondary")
+
+            gr.Markdown("**Mode**")
+            mode_dd = gr.Dropdown(
+                choices=mode_choices,
+                value="chat",
+                label=None,
+                show_label=False,
+                interactive=True,
+            )
+
+            gr.Markdown("**VAD**")
+            speech_thresh = gr.Slider(
+                0.0, 1.0, value=0.1, step=0.05,
+                label="Speech threshold",
+                info="Higher = less sensitive",
+            )
+            start_thresh = gr.Slider(
+                0.0, 1.0, value=0.5, step=0.05,
+                label="Start threshold",
+            )
+            chunk_dur = gr.Slider(
+                0.2, 1.2, value=0.6, step=0.1,
+                label="Chunk duration (s)",
+                info="Latency vs accuracy",
+            )
+
             gr.Markdown("**Voice**")
             voice_dd = gr.Dropdown(
                 choices=all_voices,
@@ -364,20 +396,20 @@ def build_ui(skills):
                 label="TTS voice",
                 interactive=True,
             )
+
             gr.Markdown("**LLM**")
-            with gr.Row():
-                temp_slider = gr.Slider(
-                    0.0, 1.0, value=0.7, step=0.05, label="Temperature"
-                )
-                tokens_slider = gr.Slider(
-                    50, 500, value=150, step=25, label="Max tokens"
-                )
+            temp_slider = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Temperature")
+            tokens_slider = gr.Slider(50, 500, value=150, step=25, label="Max tokens")
+
             gr.Markdown("**Session**")
             clear_history_btn = gr.Button("Clear conversation history", size="sm", variant="secondary")
 
         # ------------------------------------------------------------------
         # Event wiring
         # ------------------------------------------------------------------
+        menu_btn.click(fn=None, js=_JS_OPEN)
+        close_btn.click(fn=None, js=_JS_CLOSE)
+
         mode_dd.change(
             fn=on_mode_change,
             inputs=[mode_dd],
