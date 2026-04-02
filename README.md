@@ -61,6 +61,72 @@ Measured on NVIDIA RTX PRO 6000 Blackwell (96GB):
 - **Self-contained**: Built-in vLLM server for the LLM, or connect to an external one
 - **Auth**: Optional login protection via `GRADIO_AUTH`
 
+## Modes
+
+Select a mode from the Settings sidebar.
+
+| Mode | Description |
+|------|-------------|
+| **Chat** | Default conversational assistant with sliding-window conversation memory |
+| **Transcribe** | STT only — speech is transcribed and logged, no LLM or TTS |
+| **Agent** | ReAct loop with tools: web search (DuckDuckGo), calculator, and current date/time |
+| **Wake Word** | Idles until a trigger phrase is detected, then processes the remainder as Chat |
+| **skill:*** | Custom persona — auto-loaded from `.proto/skills/*.md` (see below) |
+
+### Wake Word
+
+Set the trigger phrase in the Settings sidebar (e.g. `Hey Proto`). Everything spoken after the phrase is sent to the LLM; speech without the trigger is ignored.
+
+### Agent
+
+The ReAct loop calls tools as needed before giving a final spoken response. It announces what it's doing ("Let me search for that.") so the conversation doesn't feel silent during tool calls. Maximum 5 iterations per turn.
+
+## Custom Skills
+
+Skills let you create specialized voice personas without touching code. Drop a `.md` file in `.proto/skills/` and it appears as a mode in the UI.
+
+```
+.proto/
+  skills/
+    chef.md          ← becomes "Chef" in the mode dropdown
+    spanish_tutor.md ← becomes "Spanish Tutor"
+    _README.md       ← ignored (underscore prefix)
+```
+
+### Skill file format
+
+```markdown
+---
+name: Chef
+slug: chef
+description: A culinary expert for recipes and techniques
+voice: af_bella
+lang: a
+max_tokens: 250
+temperature: 0.8
+llm_url: null          # override LLM endpoint (default: env LLM_URL)
+model: null            # override model name (default: env LLM_SERVED_NAME)
+---
+You are a warm, knowledgeable chef assistant. Help with recipes, techniques,
+and meal planning. Keep responses to 1-3 spoken sentences — no lists or markdown.
+```
+
+The body becomes the system prompt. The voice preamble (no markdown, no emojis, spoken sentences) is prepended automatically — you don't need to repeat it.
+
+### Frontmatter fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | filename (title-cased) | Display name in the mode dropdown |
+| `slug` | filename stem | URL-safe identifier |
+| `description` | `""` | Short description (unused in UI, for your reference) |
+| `voice` | `$KOKORO_VOICE` | Kokoro voice name |
+| `lang` | `$KOKORO_LANG` | Language code: `a`=American, `b`=British, `j`=Japanese |
+| `max_tokens` | `200` | Max LLM output tokens |
+| `temperature` | `0.7` | LLM sampling temperature (0.0–1.0) |
+| `llm_url` | `$LLM_URL` | Override the LLM endpoint for this skill |
+| `model` | `$LLM_SERVED_NAME` | Override the model name for this skill |
+
 ## Configuration
 
 | Variable | Default | Description |
