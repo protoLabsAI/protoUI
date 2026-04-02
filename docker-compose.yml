@@ -28,6 +28,8 @@ services:
       # Set START_VLLM=0 and LLM_URL to use external LLM
       - START_VLLM=${START_VLLM:-1}
       - LLM_URL=${LLM_URL:-}
+      - GRADIO_ROOT_PATH=${GRADIO_ROOT_PATH:-}
+      - LLM_SERVED_NAME=${LLM_SERVED_NAME:-local}
     networks:
       - default
       - gateway

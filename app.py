@@ -44,6 +44,7 @@ PORT = int(os.environ.get("PORT", "7866"))
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8100"))
 LLM_URL = os.environ.get("LLM_URL", f"http://localhost:{VLLM_PORT}/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen/Qwen3.5-4B")
+LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "local")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "openai/whisper-large-v3-turbo")
 KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
 KOKORO_LANG = os.environ.get("KOKORO_LANG", "a")
@@ -223,7 +224,7 @@ def stream_llm_tokens(text: str, history: list[dict], cancel: threading.Event):
             with client.stream(
                 "POST", f"{LLM_URL}/chat/completions",
                 json={
-                    "model": "local",
+                    "model": LLM_SERVED_NAME,
                     "messages": messages,
                     "max_tokens": 150,
                     "temperature": 0.7,
@@ -260,7 +261,7 @@ def llm_summarize(history: list[dict]) -> str:
     try:
         r = httpx.post(
             f"{LLM_URL}/chat/completions",
-            json={"model": "local", "messages": messages, "max_tokens": 100,
+            json={"model": LLM_SERVED_NAME, "messages": messages, "max_tokens": 100,
                   "temperature": 0.3, "chat_template_kwargs": {"enable_thinking": False}},
             timeout=15.0,
         )
@@ -401,7 +402,7 @@ def prewarm():
     try:
         httpx.post(
             f"{LLM_URL}/chat/completions",
-            json={"model": "local",
+            json={"model": LLM_SERVED_NAME,
                   "messages": [{"role": "system", "content": SYSTEM_PROMPT},
                                {"role": "user", "content": "Hi"}],
                   "max_tokens": 1, "temperature": 0,
