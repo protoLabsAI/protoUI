@@ -1,10 +1,13 @@
 import json
 import logging
+import re
 import threading
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 SUMMARY_PROMPT = (
     "Summarize this conversation so far in 2-3 sentences. "
@@ -44,7 +47,6 @@ def stream_llm_tokens(
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "stream": True,
-                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             ) as response:
                 for line in response.iter_lines():
@@ -59,7 +61,9 @@ def stream_llm_tokens(
                     delta = chunk["choices"][0].get("delta", {})
                     content = delta.get("content")
                     if content:
-                        yield content
+                        content = _THINK_RE.sub("", content)
+                        if content:
+                            yield content
     except Exception as e:
         if not cancel.is_set():
             logger.error(f"LLM stream error: {e}")
@@ -81,7 +85,6 @@ def llm_complete(
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "chat_template_kwargs": {"enable_thinking": False},
     }
     if tools:
         payload["tools"] = tools
@@ -113,7 +116,6 @@ def llm_summarize(history: list[dict], llm_url: str, model: str, api_key: str = 
                 "messages": messages,
                 "max_tokens": 100,
                 "temperature": 0.3,
-                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=15.0,
         )
