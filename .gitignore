@@ -1,6 +1,1 @@
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-*.crt
-*.key
+.env
