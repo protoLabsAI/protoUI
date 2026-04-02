@@ -325,6 +325,7 @@ def build_ui(skills):
             ),
             modality="audio",
             mode="send-receive",
+            rtc_configuration={"iceServers": [{"urls": "stun:stun.l.google.com:19302"}]},
         )
 
         # Transcript panel — shown only when mode = transcribe
@@ -436,18 +437,11 @@ def main():
 
     demo = build_ui(skills)
 
-    auth = os.environ.get("GRADIO_AUTH")
-    auth_pairs = None
-    if auth:
-        auth_pairs = [tuple(p.split(":", 1)) for p in auth.split(",")]
-        logger.info(f"Auth enabled for {len(auth_pairs)} user(s)")
-
     demo.launch(
         server_name="0.0.0.0",
         server_port=PORT,
         share=False,
         show_error=True,
-        auth=auth_pairs,
     )
 
 

@@ -27,7 +27,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN pip install --no-cache-dir \
     https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-COPY app.py ./
+COPY app.py voices.py ./
+COPY skills/ ./skills/
+COPY voice/ ./voice/
 
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/models
