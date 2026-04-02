@@ -42,6 +42,7 @@ def load_skills(skills_dir: Path | str = SKILLS_DIR) -> list:
         "Never use emojis, symbols, or special unicode characters — they will be spoken literally and sound broken. "
         "Speak in casual, natural, conversational sentences as if you are talking out loud. "
         "Keep responses short: 1 to 3 sentences unless more detail is truly necessary. "
+        "/no_think"
     )
 
     skills = []
