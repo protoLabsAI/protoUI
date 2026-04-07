@@ -32,6 +32,7 @@ class VoiceConfig:
     api_key: str = ""
     whisper_model: str = "openai/whisper-large-v3-turbo"
     timezone: str = "UTC"
+    skill_hint: str = ""  # A2A routing hint (e.g. "research", "board_health")
 
 
 class VoiceAgent:
@@ -179,6 +180,7 @@ class VoiceAgent:
             config.max_tokens,
             config.temperature,
             config.api_key,
+            config.skill_hint,
         ):
             if self.cancel.is_set():
                 interrupted = True

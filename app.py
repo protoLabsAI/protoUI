@@ -52,6 +52,17 @@ KOKORO_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
 KOKORO_LANG = os.environ.get("KOKORO_LANG", "a")
 START_VLLM = os.environ.get("START_VLLM", "1") == "1"
 
+# ---------------------------------------------------------------------------
+# A2A skillHint routing — maps UI mode → (skillHint, agent display name)
+# ---------------------------------------------------------------------------
+MODE_META: dict[str, tuple[str, str]] = {
+    "chat":     ("",            "Ava"),
+    "research": ("research",    "Ava"),
+    "board":    ("board_health","Ava"),
+    "sitrep":   ("sitrep",     "Ava"),
+    "quinn":    ("bug_triage",  "Quinn"),
+}
+
 VOICE_PREAMBLE = (
     "You are speaking directly to the user through a voice interface. "
     "Your response will be read aloud by a text-to-speech engine, so you must follow these rules strictly: "
@@ -226,6 +237,10 @@ def build_ui(skills):
 
     mode_choices = [
         ("Chat", "chat"),
+        ("Research", "research"),
+        ("Board", "board"),
+        ("Sitrep", "sitrep"),
+        ("Quinn", "quinn"),
         ("Transcribe", "transcribe"),
         ("Agent", "agent"),
         ("Wake Word", "wake_word"),
@@ -259,6 +274,8 @@ def build_ui(skills):
                 voice_update = gr.update()
                 temp_update = gr.update()
                 tokens_update = gr.update()
+            _config.skill_hint = ""
+            agent_name = skill.name if skill else "Ava"
         else:
             prompt = AGENT_SYSTEM_PROMPT if mode == "agent" else CHAT_SYSTEM_PROMPT
             _config.system_prompt = prompt
@@ -271,6 +288,8 @@ def build_ui(skills):
             voice_update = gr.update(value=KOKORO_VOICE)
             temp_update = gr.update(value=0.7)
             tokens_update = gr.update(value=150)
+            hint, agent_name = MODE_META.get(mode, ("", "Ava"))
+            _config.skill_hint = hint
 
         _config.mode = mode
         is_wake = mode == "wake_word"
@@ -282,6 +301,7 @@ def build_ui(skills):
             voice_update,
             temp_update,
             tokens_update,
+            f"Agent: **{agent_name}**",        # mode_badge
         )
 
     def on_voice_change(voice: str):
@@ -301,6 +321,9 @@ def build_ui(skills):
 
         # Header
         gr.Markdown("## protoVoice")
+
+        # Active agent badge
+        mode_badge = gr.Markdown("Agent: **Ava**")
 
         # Wake word input — shown only when mode = wake_word
         wake_word_box = gr.Textbox(
@@ -415,7 +438,7 @@ def build_ui(skills):
         mode_dd.change(
             fn=on_mode_change,
             inputs=[mode_dd],
-            outputs=[wake_word_box, transcript_col, voice_dd, temp_slider, tokens_slider],
+            outputs=[wake_word_box, transcript_col, voice_dd, temp_slider, tokens_slider, mode_badge],
         )
 
         # VAD options — mutate AlgoOptions in place
