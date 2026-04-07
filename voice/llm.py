@@ -34,6 +34,7 @@ def stream_llm_tokens(
     max_tokens: int = 150,
     temperature: float = 0.7,
     api_key: str = "",
+    skill_hint: str = "",
 ):
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
@@ -46,6 +47,8 @@ def stream_llm_tokens(
         "temperature": temperature,
         "stream": True,
     }
+    if skill_hint:
+        base["metadata"] = {"skillHint": skill_hint}
 
     for attempt in range(2):
         payload = dict(base)
