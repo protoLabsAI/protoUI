@@ -1,21 +1,14 @@
-import json
 import logging
-import re
+import os
 import threading
+import uuid
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-# Endpoints that rejected chat_template_kwargs (e.g. real OpenAI/Anthropic gateways)
-_no_thinking_ctrl: set[str] = set()
-
-SUMMARY_PROMPT = (
-    "Summarize this conversation so far in 2-3 sentences. "
-    "Focus on key topics discussed and any important facts mentioned."
-)
+A2A_DEFAULT_URL = os.environ.get("A2A_URL", "http://automaker-server:3008/a2a")
+A2A_DEFAULT_API_KEY = os.environ.get("A2A_API_KEY", "")
 
 
 def _headers(api_key: str) -> dict:
@@ -24,138 +17,62 @@ def _headers(api_key: str) -> dict:
     return {}
 
 
-def stream_llm_tokens(
+def a2a_send(
     text: str,
-    history: list[dict],
-    cancel: threading.Event,
-    system_prompt: str,
-    llm_url: str,
-    model: str,
-    max_tokens: int = 150,
-    temperature: float = 0.7,
-    api_key: str = "",
-):
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": text})
-
-    base: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": True,
+    conversation_id: str,
+    skill_hint: str = "chat",
+    a2a_url: str = A2A_DEFAULT_URL,
+    api_key: str = A2A_DEFAULT_API_KEY,
+) -> str:
+    """POST to the A2A endpoint and return the response text."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": uuid.uuid4().hex,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": text}],
+            },
+            "contextId": conversation_id,
+            "metadata": {"skillHint": skill_hint},
+        },
     }
-
-    for attempt in range(2):
-        payload = dict(base)
-        if llm_url not in _no_thinking_ctrl:
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-
-        try:
-            retry = False
-            with httpx.Client(timeout=60.0) as client:
-                with client.stream(
-                    "POST", f"{llm_url}/chat/completions",
-                    headers=_headers(api_key),
-                    json=payload,
-                ) as response:
-                    if response.status_code == 400 and "chat_template_kwargs" in payload:
-                        _no_thinking_ctrl.add(llm_url)
-                        logger.info(f"[LLM] {llm_url} doesn't support chat_template_kwargs, retrying")
-                        retry = True
-                    else:
-                        response.raise_for_status()
-                        for line in response.iter_lines():
-                            if cancel.is_set():
-                                return
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data == "[DONE]":
-                                break
-                            chunk = json.loads(data)
-                            delta = chunk["choices"][0].get("delta", {})
-                            content = delta.get("content")
-                            if content:
-                                content = _THINK_RE.sub("", content)
-                                if content:
-                                    yield content
-            if not retry:
-                return
-        except Exception as e:
-            if not cancel.is_set():
-                logger.error(f"LLM stream error: {e}")
-                yield "Sorry, I couldn't process that."
-            return
-
-
-def llm_complete(
-    messages: list[dict],
-    llm_url: str,
-    model: str,
-    max_tokens: int = 500,
-    temperature: float = 0.7,
-    api_key: str = "",
-) -> dict:
-    """Non-streaming completion. Returns the assistant message dict."""
-    base: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-
-    for attempt in range(2):
-        payload = dict(base)
-        if llm_url not in _no_thinking_ctrl:
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-
+    try:
         r = httpx.post(
-            f"{llm_url}/chat/completions",
+            a2a_url,
             headers=_headers(api_key),
             json=payload,
             timeout=60.0,
         )
-        if r.status_code == 400 and "chat_template_kwargs" in payload:
-            _no_thinking_ctrl.add(llm_url)
-            logger.info(f"[LLM] {llm_url} doesn't support chat_template_kwargs, retrying")
-            continue
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]
+        body = r.json()
+        if "error" in body:
+            logger.error(f"[A2A] error: {body['error']}")
+            return "Sorry, I couldn't process that."
+        artifacts = body.get("result", {}).get("artifacts", [])
+        parts = []
+        for artifact in artifacts:
+            for part in artifact.get("parts", []):
+                if part.get("kind") == "text" or part.get("type") == "text":
+                    parts.append(part.get("text", ""))
+        return " ".join(parts).strip() or "Sorry, I couldn't process that."
+    except Exception as e:
+        logger.error(f"[A2A] request error: {e}")
+        return "Sorry, I couldn't process that."
 
-    raise RuntimeError("llm_complete failed after retry")
 
-
-def llm_summarize(history: list[dict], llm_url: str, model: str, api_key: str = "") -> str:
-    messages = [
-        {"role": "system", "content": SUMMARY_PROMPT},
-        {"role": "user", "content": "\n".join(
-            f"{m['role']}: {m['content']}" for m in history
-        )},
-    ]
-    try:
-        base = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": 100,
-            "temperature": 0.3,
-        }
-        for attempt in range(2):
-            payload = dict(base)
-            if llm_url not in _no_thinking_ctrl:
-                payload["chat_template_kwargs"] = {"enable_thinking": False}
-            r = httpx.post(
-                f"{llm_url}/chat/completions",
-                headers=_headers(api_key),
-                json=payload,
-                timeout=15.0,
-            )
-            if r.status_code == 400 and "chat_template_kwargs" in payload:
-                _no_thinking_ctrl.add(llm_url)
-                continue
-            r.raise_for_status()
-            return (r.json()["choices"][0]["message"].get("content") or "").strip()
-    except Exception:
-        return ""
-    return ""
+def stream_a2a_tokens(
+    text: str,
+    conversation_id: str,
+    cancel: threading.Event,
+    skill_hint: str = "chat",
+    a2a_url: str = A2A_DEFAULT_URL,
+    api_key: str = A2A_DEFAULT_API_KEY,
+):
+    """Call A2A and yield the response text for TTS processing."""
+    if cancel.is_set():
+        return
+    response = a2a_send(text, conversation_id, skill_hint, a2a_url, api_key)
+    if not cancel.is_set() and response:
+        yield response

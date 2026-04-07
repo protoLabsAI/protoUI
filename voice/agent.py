@@ -1,21 +1,26 @@
 import logging
+import os
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
-from typing import Generator, Optional
+from typing import Generator
 
 import numpy as np
 
 from .chunker import SentenceChunker
-from .llm import llm_summarize, stream_llm_tokens
-from .react_agent import react_loop
+from .llm import stream_a2a_tokens
 from .stt import transcribe
 from .tts import tts_kokoro
 
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_TURNS = 10
-MAX_HISTORY_TOKENS = 2000
+# Maps voice mode to an A2A skillHint sent with each request
+MODE_SKILL_HINTS = {
+    "chat": "chat",
+    "agent": "research",
+    "skill": "skill",
+}
 
 
 @dataclass
@@ -32,12 +37,18 @@ class VoiceConfig:
     api_key: str = ""
     whisper_model: str = "openai/whisper-large-v3-turbo"
     timezone: str = "UTC"
+    a2a_url: str = field(
+        default_factory=lambda: os.environ.get("A2A_URL", "http://automaker-server:3008/a2a")
+    )
+    a2a_api_key: str = field(
+        default_factory=lambda: os.environ.get("A2A_API_KEY", "")
+    )
 
 
 class VoiceAgent:
     def __init__(self):
         self.history: list[dict] = []
-        self.summary: str = ""
+        self.conversation_id: str = str(uuid.uuid4())
         self.cancel = threading.Event()
 
     def interrupt(self):
@@ -45,38 +56,7 @@ class VoiceAgent:
 
     def clear_history(self):
         self.history = []
-        self.summary = ""
-
-    def _get_context(self) -> list[dict]:
-        messages = []
-        if self.summary:
-            messages.append({
-                "role": "system",
-                "content": f"Previous conversation summary: {self.summary}",
-            })
-        recent = self.history[-(MAX_HISTORY_TURNS * 2):]
-        total = sum(len(m["content"]) for m in recent)
-        while total > MAX_HISTORY_TOKENS and len(recent) > 2:
-            removed = recent.pop(0)
-            total -= len(removed["content"])
-            if recent and recent[0]["role"] == "assistant":
-                total -= len(recent.pop(0)["content"])
-        messages.extend(recent)
-        return messages
-
-    def _maybe_summarize(self, config: VoiceConfig):
-        if len(self.history) > MAX_HISTORY_TURNS * 2:
-            old = self.history[:-(MAX_HISTORY_TURNS * 2)]
-            if old:
-                to_sum = []
-                if self.summary:
-                    to_sum.append({"role": "system", "content": f"Prior summary: {self.summary}"})
-                to_sum.extend(old)
-                s = llm_summarize(to_sum, config.llm_url, config.model, config.api_key)
-                if s:
-                    self.summary = s
-                    logger.info(f"[Context] Summarized: {s[:80]}...")
-            self.history = self.history[-(MAX_HISTORY_TURNS * 2):]
+        self.conversation_id = str(uuid.uuid4())
 
     def process(
         self,
@@ -124,61 +104,20 @@ class VoiceAgent:
             yield ("transcript", user_text)
             return
 
-        # ReAct agent mode
-        if mode == "agent":
-            chunker = SentenceChunker()
-            for event_type, payload in react_loop(
-                user_text,
-                self._get_context(),
-                config.system_prompt,
-                config.llm_url,
-                config.model,
-                config.max_tokens,
-                config.temperature,
-                self.cancel,
-                config.api_key,
-                config.timezone,
-            ):
-                if self.cancel.is_set():
-                    break
-                if event_type == "phrase":
-                    sr, audio = tts_kokoro(payload, config.voice, config.lang)
-                    yield ("audio", (sr, audio))
-                elif event_type == "token":
-                    for sentence in chunker.feed(payload):
-                        if self.cancel.is_set():
-                            break
-                        sr, audio = tts_kokoro(sentence, config.voice, config.lang)
-                        yield ("audio", (sr, audio))
-                    if not self.cancel.is_set():
-                        for sentence in chunker.flush():
-                            if self.cancel.is_set():
-                                break
-                            sr, audio = tts_kokoro(sentence, config.voice, config.lang)
-                            yield ("audio", (sr, audio))
-                elif event_type == "history":
-                    user_msg, asst_msg = payload
-                    self.history.append({"role": "user", "content": user_msg})
-                    self.history.append({"role": "assistant", "content": asst_msg})
-                    self._maybe_summarize(config)
-            return
-
-        # Chat / skill mode — streaming pipeline
+        # All other modes route through A2A — Ava handles agent smarts
+        skill_hint = MODE_SKILL_HINTS.get(mode, "chat")
         chunker = SentenceChunker()
         full_response = ""
         ttfa = None
         interrupted = False
 
-        for token in stream_llm_tokens(
+        for token in stream_a2a_tokens(
             user_text,
-            self._get_context(),
+            self.conversation_id,
             self.cancel,
-            config.system_prompt,
-            config.llm_url,
-            config.model,
-            config.max_tokens,
-            config.temperature,
-            config.api_key,
+            skill_hint=skill_hint,
+            a2a_url=config.a2a_url,
+            api_key=config.a2a_api_key,
         ):
             if self.cancel.is_set():
                 interrupted = True
@@ -206,7 +145,6 @@ class VoiceAgent:
         if full_response.strip():
             self.history.append({"role": "user", "content": user_text})
             self.history.append({"role": "assistant", "content": full_response.strip()})
-            self._maybe_summarize(config)
 
         status = "INTERRUPTED" if interrupted else "DONE"
         logger.info(
