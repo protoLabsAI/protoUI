@@ -174,8 +174,48 @@ def build_ui(skills):
         response = ava_chat(message=message, history=chat_history)
         return "", history + [{"role": "user", "content": message}, {"role": "assistant", "content": response}]
 
-    # Single-page layout: voice on top, chat below. No tabs — avoids
-    # WebRTC Stream + Gradio tab-switching JS conflict.
+    skills_map = {s.slug: s for s in skills}
+    mode_choices = [
+        ("Chat", "chat"),
+        ("Agent", "agent"),
+    ] + [(s.name, f"skill:{s.slug}") for s in skills]
+
+    all_voices = list_voices()
+    for v in all_voices:
+        if v not in VOICE_LANG_MAP:
+            VOICE_LANG_MAP[v] = KOKORO_LANG
+
+    def on_mode_change(mode: str):
+        if mode.startswith("skill:"):
+            slug = mode[6:]
+            skill = skills_map.get(slug)
+            if skill:
+                _config.system_prompt = skill.system_prompt
+                _config.voice = skill.voice
+                _config.lang = skill.lang
+                _config.max_tokens = skill.max_tokens
+                _config.temperature = skill.temperature
+                _config.llm_url = skill.llm_url or LLM_URL
+                _config.model = skill.model or LLM_SERVED_NAME
+                return gr.update(value=skill.voice), gr.update(value=skill.temperature), gr.update(value=skill.max_tokens)
+        else:
+            _config.system_prompt = VOICE_SYSTEM_PROMPT
+            _config.voice = KOKORO_VOICE
+            _config.lang = KOKORO_LANG
+            _config.max_tokens = 150
+            _config.temperature = 0.7
+            _config.llm_url = LLM_URL
+            _config.model = LLM_SERVED_NAME
+        _config.mode = mode
+        return gr.update(value=KOKORO_VOICE), gr.update(value=0.7), gr.update(value=150)
+
+    def on_voice_change(voice: str):
+        _config.voice = voice
+        _config.lang = VOICE_LANG_MAP.get(voice, KOKORO_LANG)
+
+    def on_clear_history():
+        agent.clear_history()
+
     with gr.Blocks(title="Ava") as demo:
         gr.Markdown("## Ava")
 
@@ -186,10 +226,38 @@ def build_ui(skills):
             rtc_configuration={"iceServers": [{"urls": "stun:stun.l.google.com:19302"}]},
         )
 
+        # Settings sidebar
+        with gr.Sidebar(label="Settings", open=False, position="right"):
+            gr.Markdown("**Mode**")
+            mode_dd = gr.Dropdown(choices=mode_choices, value="chat", show_label=False, interactive=True)
+
+            gr.Markdown("**Voice**")
+            voice_dd = gr.Dropdown(choices=all_voices, value=KOKORO_VOICE, label="TTS voice", interactive=True)
+
+            gr.Markdown("**LLM**")
+            llm_url_box = gr.Textbox(label="Voice LLM URL", value=LLM_URL, interactive=True, max_lines=1)
+            llm_model_box = gr.Textbox(label="Voice model", value=LLM_SERVED_NAME, interactive=True, max_lines=1)
+            llm_api_key_box = gr.Textbox(label="API key", value=LLM_API_KEY, type="password", interactive=True, max_lines=1)
+            temp_slider = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Temperature")
+            tokens_slider = gr.Slider(50, 500, value=150, step=25, label="Max tokens")
+
+            gr.Markdown("**Session**")
+            clear_history_btn = gr.Button("Clear voice history", size="sm", variant="secondary")
+
+        # Sidebar event wiring
+        mode_dd.change(fn=on_mode_change, inputs=[mode_dd], outputs=[voice_dd, temp_slider, tokens_slider])
+        voice_dd.change(fn=on_voice_change, inputs=[voice_dd])
+        temp_slider.change(fn=lambda v: setattr(_config, "temperature", v), inputs=[temp_slider])
+        tokens_slider.change(fn=lambda v: setattr(_config, "max_tokens", int(v)), inputs=[tokens_slider])
+        llm_url_box.change(fn=lambda v: setattr(_config, "llm_url", v.strip()), inputs=[llm_url_box])
+        llm_model_box.change(fn=lambda v: setattr(_config, "model", v.strip()), inputs=[llm_model_box])
+        llm_api_key_box.change(fn=lambda v: setattr(_config, "api_key", v.strip()), inputs=[llm_api_key_box])
+        clear_history_btn.click(fn=on_clear_history)
+
         gr.Markdown("---")
 
-        # Text chat
-        chatbot = gr.Chatbot(label="Ava", type="messages", height=500)
+        # Text chat below voice
+        chatbot = gr.Chatbot(label="Ava", type="messages", height=400)
         with gr.Row():
             chat_input = gr.Textbox(placeholder="Type a message…", show_label=False, scale=9, max_lines=3, autofocus=True)
             send_btn = gr.Button("Send", scale=1, variant="primary")
