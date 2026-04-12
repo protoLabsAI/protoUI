@@ -30,6 +30,8 @@ RUN pip install --no-cache-dir \
 COPY app.py voices.py ./
 COPY skills/ ./skills/
 COPY voice/ ./voice/
+COPY chat/ ./chat/
+COPY config/ ./config/
 
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/models
