@@ -218,7 +218,12 @@ def build_ui(skills):
 
     with gr.Blocks(
         title="Ava",
-        css="footer {display: none !important} .gradio-container > .flex.flex-wrap {display: none !important}",
+        css=(
+            "footer {display: none !important} "
+            ".gradio-container > .flex.flex-wrap {display: none !important} "
+            "h1:has(+ p a[href*='fastrtc']), p:has(a[href*='fastrtc']) {display: none !important} "
+            ".prose h1, .prose p:has(a) {display: none !important}"
+        ),
         analytics_enabled=False,
     ) as demo:
 
