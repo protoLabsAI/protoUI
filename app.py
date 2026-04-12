@@ -303,7 +303,7 @@ def build_ui(skills):
         "- `/help` — show this help message"
     )
 
-    def handle_chat(message: str, history: list[list[str | None]]) -> tuple[str, list[list[str | None]]]:
+    def handle_chat(message: str, history: list[dict]) -> tuple[str, list[dict]]:
         """Process a text chat message or slash command."""
         nonlocal _chat_conversation_id
         message = message.strip()
@@ -317,23 +317,30 @@ def build_ui(skills):
                 _chat_conversation_id = str(uuid.uuid4())
                 return "", []
             elif cmd == "/help":
-                history = history + [[message, _SLASH_HELP]]
+                history = history + [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": _SLASH_HELP},
+                ]
                 return "", history
             else:
-                history = history + [[message, f"Unknown command `{cmd}`. Type `/help` for available commands."]]
+                history = history + [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": f"Unknown command `{cmd}`. Type `/help` for available commands."},
+                ]
                 return "", history
 
-        # Regular message — route through local LLM chat backend
-        # Convert Gradio history format [[user, assistant], ...] to messages format
-        chat_history = []
-        for turn in history:
-            if turn[0]:
-                chat_history.append({"role": "user", "content": turn[0]})
-            if turn[1]:
-                chat_history.append({"role": "assistant", "content": turn[1]})
+        # Build conversation history for the LLM backend
+        chat_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in history
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
 
         response = ava_chat(message=message, history=chat_history)
-        history = history + [[message, response]]
+        history = history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": response},
+        ]
         return "", history
 
     # ------------------------------------------------------------------
@@ -349,7 +356,37 @@ def build_ui(skills):
 
         with gr.Tabs():
             # ---------------------------------------------------------------
-            # Tab 1: Voice
+            # Tab 1: Text Chat (default — opens first)
+            # ---------------------------------------------------------------
+            with gr.Tab("Chat"):
+                chatbot = gr.Chatbot(
+                    label="Ava",
+                    type="messages",
+                    height=500,
+                )
+                with gr.Row():
+                    chat_input = gr.Textbox(
+                        placeholder="Type a message or /help for slash commands…",
+                        show_label=False,
+                        scale=9,
+                        max_lines=3,
+                        autofocus=True,
+                    )
+                    chat_send_btn = gr.Button("Send", scale=1, variant="primary")
+
+                chat_send_btn.click(
+                    fn=handle_chat,
+                    inputs=[chat_input, chatbot],
+                    outputs=[chat_input, chatbot],
+                )
+                chat_input.submit(
+                    fn=handle_chat,
+                    inputs=[chat_input, chatbot],
+                    outputs=[chat_input, chatbot],
+                )
+
+            # ---------------------------------------------------------------
+            # Tab 2: Voice
             # ---------------------------------------------------------------
             with gr.Tab("Voice"):
                 # Wake word input — shown only when mode = wake_word
@@ -384,36 +421,6 @@ def build_ui(skills):
                         show_copy_button=True,
                     )
                     clear_transcript_btn = gr.Button("Clear transcript", size="sm", variant="secondary")
-
-            # ---------------------------------------------------------------
-            # Tab 2: Text Chat
-            # ---------------------------------------------------------------
-            with gr.Tab("Chat"):
-                chatbot = gr.Chatbot(
-                    label="Text Chat",
-                    height=500,
-                    show_copy_button=True,
-                )
-                with gr.Row():
-                    chat_input = gr.Textbox(
-                        placeholder="Type a message or /help for slash commands…",
-                        show_label=False,
-                        scale=9,
-                        max_lines=3,
-                        autofocus=True,
-                    )
-                    chat_send_btn = gr.Button("Send", scale=1, variant="primary")
-
-                chat_send_btn.click(
-                    fn=handle_chat,
-                    inputs=[chat_input, chatbot],
-                    outputs=[chat_input, chatbot],
-                )
-                chat_input.submit(
-                    fn=handle_chat,
-                    inputs=[chat_input, chatbot],
-                    outputs=[chat_input, chatbot],
-                )
 
         # Settings sidebar — native Gradio drawer
         with gr.Sidebar(label="Settings", open=False, position="right"):
