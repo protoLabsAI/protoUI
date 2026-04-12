@@ -12,6 +12,9 @@ import os
 import uuid
 
 import gradio as gr
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from chat.backend import chat as ava_chat
 
@@ -109,46 +112,53 @@ def _build_agent_card(host: str) -> dict:
     }
 
 
-def _mount_a2a_routes(app):
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse
+# ---------------------------------------------------------------------------
+# FastAPI app with A2A routes — Gradio mounts on top
+# ---------------------------------------------------------------------------
 
-    @app.get("/.well-known/agent.json")
-    @app.get("/.well-known/agent-card.json")
-    async def agent_card(request: Request):
-        host = request.headers.get("host", f"ava-agent:{PORT}")
-        return JSONResponse(content=_build_agent_card(host), headers={"Cache-Control": "public, max-age=60"})
+fastapi_app = FastAPI(title="Ava")
 
-    @app.post("/a2a")
-    async def a2a_handler(request: Request):
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse(content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
 
-        rpc_id = body.get("id")
-        if body.get("method") != "message/send":
-            return JSONResponse(content={"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32601, "message": f"Method not found: {body.get('method')}"}})
+@fastapi_app.get("/.well-known/agent.json")
+@fastapi_app.get("/.well-known/agent-card.json")
+async def agent_card(request: Request):
+    host = request.headers.get("host", f"ava-agent:{PORT}")
+    return JSONResponse(content=_build_agent_card(host), headers={"Cache-Control": "public, max-age=60"})
 
-        parts = body.get("params", {}).get("message", {}).get("parts", [])
-        user_text = "\n".join(p.get("text", "") for p in parts if (p.get("kind") or p.get("type")) == "text").strip()
-        if not user_text:
-            return JSONResponse(content={"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "No text part"}})
 
-        context_id = body.get("params", {}).get("contextId", str(uuid.uuid4()))
-        logger.info(f'A2A: "{user_text[:80]}"')
+@fastapi_app.post("/a2a")
+async def a2a_handler(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
 
-        response_text = ava_chat(message=user_text)
-        return JSONResponse(content={
-            "jsonrpc": "2.0", "id": rpc_id,
-            "result": {
-                "id": str(uuid.uuid4()), "contextId": context_id,
-                "status": {"state": "completed"},
-                "artifacts": [{"artifactId": str(uuid.uuid4()), "parts": [{"kind": "text", "text": response_text}]}],
-            },
-        })
+    rpc_id = body.get("id")
+    if body.get("method") != "message/send":
+        return JSONResponse(content={"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32601, "message": f"Method not found: {body.get('method')}"}})
 
-    logger.info("A2A routes mounted")
+    parts = body.get("params", {}).get("message", {}).get("parts", [])
+    user_text = "\n".join(p.get("text", "") for p in parts if (p.get("kind") or p.get("type")) == "text").strip()
+    if not user_text:
+        return JSONResponse(content={"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "No text part"}})
+
+    context_id = body.get("params", {}).get("contextId", str(uuid.uuid4()))
+    logger.info(f'A2A: "{user_text[:80]}"')
+
+    response_text = ava_chat(message=user_text)
+    return JSONResponse(content={
+        "jsonrpc": "2.0", "id": rpc_id,
+        "result": {
+            "id": str(uuid.uuid4()), "contextId": context_id,
+            "status": {"state": "completed"},
+            "artifacts": [{"artifactId": str(uuid.uuid4()), "parts": [{"kind": "text", "text": response_text}]}],
+        },
+    })
+
+
+@fastapi_app.get("/healthz")
+async def health():
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +166,10 @@ def _mount_a2a_routes(app):
 # ---------------------------------------------------------------------------
 def main():
     demo = build_ui()
-    _mount_a2a_routes(demo.app)
-    demo.launch(server_name="0.0.0.0", server_port=PORT, share=False, show_error=True)
+    # Mount Gradio ON the FastAPI app so A2A routes + Gradio UI coexist
+    app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+    logger.info(f"Ava starting on port {PORT} — A2A + chat UI")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
