@@ -216,10 +216,9 @@ def build_ui(skills):
     def on_clear_history():
         agent.clear_history()
 
-    with gr.Blocks(title="Ava") as demo:
-        gr.Markdown("## Ava")
+    with gr.Blocks(title="Ava", css="footer {display: none !important}") as demo:
 
-        # Voice — always visible with audio visualizer
+        # Voice — clean, just the WebRTC stream
         Stream(
             ReplyOnPause(voice_handler, algo_options=_algo_options, output_sample_rate=24000, can_interrupt=True),
             modality="audio", mode="send-receive",
@@ -254,16 +253,15 @@ def build_ui(skills):
         llm_api_key_box.change(fn=lambda v: setattr(_config, "api_key", v.strip()), inputs=[llm_api_key_box])
         clear_history_btn.click(fn=on_clear_history)
 
-        gr.Markdown("---")
+        # Text chat — collapsible, hidden by default
+        with gr.Accordion("Chat", open=False):
+            chatbot = gr.Chatbot(type="messages", height=400, show_label=False)
+            with gr.Row():
+                chat_input = gr.Textbox(placeholder="Type a message…", show_label=False, scale=9, max_lines=3)
+                send_btn = gr.Button("Send", scale=1, variant="primary")
 
-        # Text chat below voice
-        chatbot = gr.Chatbot(label="Ava", type="messages", height=400)
-        with gr.Row():
-            chat_input = gr.Textbox(placeholder="Type a message…", show_label=False, scale=9, max_lines=3, autofocus=True)
-            send_btn = gr.Button("Send", scale=1, variant="primary")
-
-        send_btn.click(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
-        chat_input.submit(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
+            send_btn.click(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
+            chat_input.submit(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
 
     return demo
 
