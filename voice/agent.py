@@ -9,7 +9,7 @@ from typing import Generator
 import numpy as np
 
 from .chunker import SentenceChunker
-from .llm import stream_a2a_tokens
+from .llm import stream_llm_tokens
 from .stt import transcribe
 from .tts import tts_kokoro
 
@@ -111,13 +111,15 @@ class VoiceAgent:
         ttfa = None
         interrupted = False
 
-        for token in stream_a2a_tokens(
+        for token in stream_llm_tokens(
             user_text,
-            self.conversation_id,
+            config.system_prompt,
             self.cancel,
-            skill_hint=skill_hint,
-            a2a_url=config.a2a_url,
-            api_key=config.a2a_api_key,
+            model=config.model,
+            llm_url=config.llm_url,
+            api_key=config.api_key,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
         ):
             if self.cancel.is_set():
                 interrupted = True

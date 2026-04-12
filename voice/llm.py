@@ -1,78 +1,84 @@
+"""Voice LLM calls — direct OpenAI-compatible chat completions.
+
+Uses the configured LLM_URL (shared vLLM or LiteLLM gateway) instead
+of routing through A2A. The voice pipeline needs low-latency responses
+so we call the LLM directly with the voice system prompt.
+"""
+
 import logging
 import os
 import threading
-import uuid
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-A2A_DEFAULT_URL = os.environ.get("A2A_URL", "http://automaker-server:3008/a2a")
-A2A_DEFAULT_API_KEY = os.environ.get("A2A_API_KEY", "")
+LLM_URL = os.environ.get("LLM_URL", "http://vllm:8000/v1")
+LLM_MODEL = os.environ.get("LLM_SERVED_NAME", "local")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 
 
-def _headers(api_key: str) -> dict:
-    if api_key:
-        return {"Authorization": f"Bearer {api_key}"}
-    return {}
-
-
-def a2a_send(
+def llm_chat(
     text: str,
-    conversation_id: str,
-    skill_hint: str = "chat",
-    a2a_url: str = A2A_DEFAULT_URL,
-    api_key: str = A2A_DEFAULT_API_KEY,
+    system_prompt: str,
+    model: str = "",
+    llm_url: str = "",
+    api_key: str = "",
+    temperature: float = 0.7,
+    max_tokens: int = 150,
 ) -> str:
-    """POST to the A2A endpoint and return the response text."""
-    payload = {
-        "jsonrpc": "2.0",
-        "id": uuid.uuid4().hex,
-        "method": "message/send",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"kind": "text", "text": text}],
-            },
-            "contextId": conversation_id,
-            "metadata": {"skillHint": skill_hint},
-        },
-    }
+    """Direct chat completion call to the LLM."""
+    url = (llm_url or LLM_URL).rstrip("/")
+    mdl = model or LLM_MODEL
+    key = api_key or LLM_API_KEY
+
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
     try:
         r = httpx.post(
-            a2a_url,
-            headers=_headers(api_key),
-            json=payload,
-            timeout=60.0,
+            f"{url}/chat/completions",
+            headers=headers,
+            json={
+                "model": mdl,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
+            timeout=30.0,
         )
         r.raise_for_status()
-        body = r.json()
-        if "error" in body:
-            logger.error(f"[A2A] error: {body['error']}")
-            return "Sorry, I couldn't process that."
-        artifacts = body.get("result", {}).get("artifacts", [])
-        parts = []
-        for artifact in artifacts:
-            for part in artifact.get("parts", []):
-                if part.get("kind") == "text" or part.get("type") == "text":
-                    parts.append(part.get("text", ""))
-        return " ".join(parts).strip() or "Sorry, I couldn't process that."
+        return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        logger.error(f"[A2A] request error: {e}")
+        logger.error(f"Voice LLM error: {e}")
         return "Sorry, I couldn't process that."
 
 
-def stream_a2a_tokens(
+def stream_llm_tokens(
     text: str,
-    conversation_id: str,
+    system_prompt: str,
     cancel: threading.Event,
-    skill_hint: str = "chat",
-    a2a_url: str = A2A_DEFAULT_URL,
-    api_key: str = A2A_DEFAULT_API_KEY,
+    model: str = "",
+    llm_url: str = "",
+    api_key: str = "",
+    temperature: float = 0.7,
+    max_tokens: int = 150,
 ):
-    """Call A2A and yield the response text for TTS processing."""
+    """Call LLM and yield the response for TTS processing."""
     if cancel.is_set():
         return
-    response = a2a_send(text, conversation_id, skill_hint, a2a_url, api_key)
+    response = llm_chat(text, system_prompt, model, llm_url, api_key, temperature, max_tokens)
     if not cancel.is_set() and response:
         yield response
+
+
+# Backwards compat aliases
+def a2a_send(text, conversation_id, skill_hint="chat", a2a_url="", api_key=""):
+    return llm_chat(text, "You are a helpful assistant.", a2a_url=a2a_url, api_key=api_key)
+
+def stream_a2a_tokens(text, conversation_id, cancel, skill_hint="chat", a2a_url="", api_key=""):
+    yield from stream_llm_tokens(text, "You are a helpful assistant.", cancel, llm_url=a2a_url, api_key=api_key)
