@@ -32,6 +32,7 @@ COPY skills/ ./skills/
 COPY voice/ ./voice/
 COPY chat/ ./chat/
 COPY config/ ./config/
+COPY memory/ ./memory/
 
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/models

@@ -1,26 +1,31 @@
+"""Duplex voice agent — small model routes, Opus thinks.
+
+Every utterance goes to the small model first. It either:
+  1. Responds directly (simple chat) → speak it, done
+  2. Calls deep_research tool → speak its filler text via TTS
+     while Opus runs the full ReAct loop with tools in parallel,
+     then speak Opus's result when ready
+"""
+
 import logging
-import os
+import queue
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Generator
 
 import numpy as np
 
+from memory.context import assemble_context
+from memory.graphiti import add_episode, get_context_block
+
 from .chunker import SentenceChunker
-from .llm import stream_llm_tokens
+from .llm import llm_chat
 from .stt import transcribe
 from .tts import tts_kokoro
 
 logger = logging.getLogger(__name__)
-
-# Maps voice mode to an A2A skillHint sent with each request
-MODE_SKILL_HINTS = {
-    "chat": "chat",
-    "agent": "research",
-    "skill": "skill",
-}
 
 
 @dataclass
@@ -37,12 +42,6 @@ class VoiceConfig:
     api_key: str = ""
     whisper_model: str = "openai/whisper-large-v3-turbo"
     timezone: str = "UTC"
-    a2a_url: str = field(
-        default_factory=lambda: os.environ.get("A2A_URL", "http://automaker-server:3008/a2a")
-    )
-    a2a_api_key: str = field(
-        default_factory=lambda: os.environ.get("A2A_API_KEY", "")
-    )
 
 
 class VoiceAgent:
@@ -58,20 +57,39 @@ class VoiceAgent:
         self.history = []
         self.conversation_id = str(uuid.uuid4())
 
+    def _run_opus(self, message: str):
+        """Run Opus ReAct agent. Returns AgentResult or None."""
+        try:
+            from chat.agent import run
+            return run(message)
+        except Exception as e:
+            logger.error(f"[Duplex] Opus error: {e}")
+            return None
+
+    def _tts_text(
+        self, text: str, config: VoiceConfig
+    ) -> Generator[tuple[str, object], None, None]:
+        chunker = SentenceChunker()
+        for sentence in chunker.feed(text):
+            if self.cancel.is_set():
+                return
+            sr, audio = tts_kokoro(sentence, config.voice, config.lang)
+            yield ("audio", (sr, audio))
+        for sentence in chunker.flush():
+            if self.cancel.is_set():
+                return
+            sr, audio = tts_kokoro(sentence, config.voice, config.lang)
+            yield ("audio", (sr, audio))
+
     def process(
         self,
         audio_tuple: tuple[int, np.ndarray],
         config: VoiceConfig,
     ) -> Generator[tuple[str, object], None, None]:
-        """
-        Generator yielding:
-          ("audio", (sr, np.ndarray))  — audio chunk to play
-          ("transcript", str)          — transcription text (transcribe mode)
-        """
         self.cancel.clear()
         t_start = time.time()
 
-        # Always transcribe first
+        # --- STT ---
         t0 = time.time()
         try:
             user_text = transcribe(audio_tuple, config.whisper_model)
@@ -84,73 +102,123 @@ class VoiceAgent:
             return
         logger.info(f"[STT {stt_time:.2f}s] {user_text!r}")
 
-        # Resolve effective mode (wake_word gates to chat)
+        # --- Wake word ---
         mode = config.mode
         if mode == "wake_word":
             word = config.wake_word.strip().lower()
             if word and word not in user_text.lower():
-                logger.debug(f"[Wake] No trigger in: {user_text!r}")
                 return
             if word:
                 idx = user_text.lower().find(word)
                 user_text = user_text[idx + len(word):].strip(" ,.")
             if not user_text:
                 return
-            logger.info(f"[Wake] Triggered → {user_text!r}")
             mode = "chat"
 
-        # Transcribe-only mode
         if mode == "transcribe":
             yield ("transcript", user_text)
             return
 
-        # All other modes route through A2A — Ava handles agent smarts
-        skill_hint = MODE_SKILL_HINTS.get(mode, "chat")
-        chunker = SentenceChunker()
-        full_response = ""
-        ttfa = None
-        interrupted = False
+        # --- Memory enrichment ---
+        recalled = get_context_block(user_text)
+        recent_turns = [
+            {"role": h["role"], "content": h["content"], "channel": "ava-voice"}
+            for h in self.history
+            if h.get("role") in ("user", "assistant") and h.get("content")
+        ]
+        enriched_message = assemble_context(
+            recalled or None, recent_turns, user_text,
+        )
 
-        for token in stream_llm_tokens(
-            user_text,
+        # --- Small model: respond + decide if research needed ---
+        t_llm = time.time()
+        sm = llm_chat(
+            enriched_message,
             config.system_prompt,
-            self.cancel,
             model=config.model,
             llm_url=config.llm_url,
             api_key=config.api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
-        ):
-            if self.cancel.is_set():
-                interrupted = True
-                break
-            full_response += token
-            for sentence in chunker.feed(token):
-                if self.cancel.is_set():
-                    interrupted = True
-                    break
-                sr, audio = tts_kokoro(sentence, config.voice, config.lang)
-                if ttfa is None:
-                    ttfa = time.time() - t_start
-                    logger.info(f"[TTFA {ttfa:.2f}s] {sentence!r}")
-                yield ("audio", (sr, audio))
-            if interrupted:
-                break
+        )
+        logger.info(
+            f"[Small {time.time() - t_llm:.2f}s] "
+            f"content={bool(sm.content)} research={sm.research_query!r}"
+        )
 
-        if not interrupted:
-            for sentence in chunker.flush():
-                if self.cancel.is_set():
-                    break
-                sr, audio = tts_kokoro(sentence, config.voice, config.lang)
-                yield ("audio", (sr, audio))
+        full_response = ""
+        ttfa = None
 
+        if not sm.research_query:
+            # Simple chat — small model handled it, no Opus needed
+            if sm.content:
+                full_response = sm.content
+                for event in self._tts_text(sm.content, config):
+                    if self.cancel.is_set():
+                        break
+                    if ttfa is None:
+                        ttfa = time.time() - t_start
+                    yield event
+        else:
+            # Research needed — speak filler while Opus works
+            opus_q: queue.Queue = queue.Queue()
+            opus_done = threading.Event()
+
+            def opus_worker():
+                result = self._run_opus(enriched_message)
+                opus_q.put(result)
+                opus_done.set()
+
+            opus_thread = threading.Thread(target=opus_worker, daemon=True)
+            opus_thread.start()
+
+            # Speak small model's filler (if any)
+            if sm.content and not self.cancel.is_set():
+                logger.info(f"[Duplex] Filler: {sm.content!r}")
+                for event in self._tts_text(sm.content, config):
+                    if self.cancel.is_set():
+                        break
+                    if ttfa is None:
+                        ttfa = time.time() - t_start
+                    yield event
+
+            # Wait for Opus result
+            if not self.cancel.is_set():
+                opus_done.wait(timeout=60)
+                try:
+                    agent_result = opus_q.get_nowait()
+                    if agent_result and agent_result.text:
+                        full_response = agent_result.text
+                        logger.info(
+                            f"[Duplex] Opus result (tools={agent_result.used_tools})"
+                        )
+                        for event in self._tts_text(agent_result.text, config):
+                            if self.cancel.is_set():
+                                break
+                            if ttfa is None:
+                                ttfa = time.time() - t_start
+                            yield event
+                except queue.Empty:
+                    full_response = sm.content or ""
+
+            if not full_response:
+                full_response = sm.content or ""
+
+        # --- History + episode ---
         if full_response.strip():
             self.history.append({"role": "user", "content": user_text})
-            self.history.append({"role": "assistant", "content": full_response.strip()})
+            self.history.append(
+                {"role": "assistant", "content": full_response.strip()}
+            )
+            threading.Thread(
+                target=add_episode,
+                args=(user_text, full_response.strip()),
+                kwargs={"platform": "ava-voice"},
+                daemon=True,
+            ).start()
 
-        status = "INTERRUPTED" if interrupted else "DONE"
         logger.info(
-            f"[{status} {time.time() - t_start:.2f}s] "
+            f"[DONE {time.time() - t_start:.2f}s] "
             f"STT={stt_time:.2f}s TTFA={ttfa or 0:.2f}s "
             f"history={len(self.history)}"
         )

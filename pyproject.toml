@@ -10,6 +10,7 @@ dependencies = [
     "gradio>=5.0",
     "fastrtc[vad]>=0.0.10",
     "kokoro>=0.9",
+    "openai>=1.0",
     "httpx",
     "soundfile",
     "soxr",

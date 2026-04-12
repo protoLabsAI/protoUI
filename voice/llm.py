@@ -1,13 +1,14 @@
-"""Voice LLM calls — direct OpenAI-compatible chat completions.
+"""Voice LLM — small model with tool-based routing to Opus.
 
-Uses the configured LLM_URL (shared vLLM or LiteLLM gateway) instead
-of routing through A2A. The voice pipeline needs low-latency responses
-so we call the LLM directly with the voice system prompt.
+The small model responds to every utterance. It has a single
+`deep_research` tool — if it calls that, the voice agent spawns
+Opus for the full ReAct loop with web search and other tools.
 """
 
+import json
 import logging
 import os
-import threading
+import re
 
 import httpx
 
@@ -16,6 +17,42 @@ logger = logging.getLogger(__name__)
 LLM_URL = os.environ.get("LLM_URL", "http://vllm:8000/v1")
 LLM_MODEL = os.environ.get("LLM_SERVED_NAME", "local")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+
+_QWEN_TOOL_RE = re.compile(
+    r"<tool_call>\s*<function=deep_research>\s*<parameter=query>\s*(.+?)\s*</parameter>",
+    re.DOTALL,
+)
+
+RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_research",
+        "description": (
+            "Search the web or do deeper analysis. Use when the user asks "
+            "about current events, needs a fact you're not confident about, "
+            "wants a calculation, or asks something that requires up-to-date "
+            "information. Pass the user's question as the query."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The question or topic to research",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+class SmallModelResponse:
+    __slots__ = ("content", "research_query")
+
+    def __init__(self, content: str, research_query: str | None):
+        self.content = content
+        self.research_query = research_query
 
 
 def llm_chat(
@@ -26,11 +63,16 @@ def llm_chat(
     api_key: str = "",
     temperature: float = 0.7,
     max_tokens: int = 150,
-) -> str:
-    """Direct chat completion call to the LLM."""
+) -> SmallModelResponse:
+    """Call the small model. Returns spoken content + optional research query."""
     url = (llm_url or LLM_URL).rstrip("/")
     mdl = model or LLM_MODEL
     key = api_key or LLM_API_KEY
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": text},
+    ]
 
     headers = {"Content-Type": "application/json"}
     if key:
@@ -42,43 +84,38 @@ def llm_chat(
             headers=headers,
             json={
                 "model": mdl,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
+                "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                "tools": [RESEARCH_TOOL],
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=30.0,
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        msg = r.json()["choices"][0]["message"]
+        content = (msg.get("content") or msg.get("reasoning") or "").strip()
+
+        research_query = None
+
+        # Check structured tool_calls field first (if vLLM parser works)
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("function", {}).get("name") == "deep_research":
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                    research_query = args.get("query", "")
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                break
+
+        # Fallback: parse Qwen's XML tool call format from content
+        if not research_query and content:
+            m = _QWEN_TOOL_RE.search(content)
+            if m:
+                research_query = m.group(1).strip()
+                content = content[:m.start()].strip()
+
+        return SmallModelResponse(content, research_query)
     except Exception as e:
         logger.error(f"Voice LLM error: {e}")
-        return "Sorry, I couldn't process that."
-
-
-def stream_llm_tokens(
-    text: str,
-    system_prompt: str,
-    cancel: threading.Event,
-    model: str = "",
-    llm_url: str = "",
-    api_key: str = "",
-    temperature: float = 0.7,
-    max_tokens: int = 150,
-):
-    """Call LLM and yield the response for TTS processing."""
-    if cancel.is_set():
-        return
-    response = llm_chat(text, system_prompt, model, llm_url, api_key, temperature, max_tokens)
-    if not cancel.is_set() and response:
-        yield response
-
-
-# Backwards compat aliases
-def a2a_send(text, conversation_id, skill_hint="chat", a2a_url="", api_key=""):
-    return llm_chat(text, "You are a helpful assistant.", a2a_url=a2a_url, api_key=api_key)
-
-def stream_a2a_tokens(text, conversation_id, cancel, skill_hint="chat", a2a_url="", api_key=""):
-    yield from stream_llm_tokens(text, "You are a helpful assistant.", cancel, llm_url=a2a_url, api_key=api_key)
+        return SmallModelResponse("", None)
