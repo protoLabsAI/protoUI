@@ -216,7 +216,11 @@ def build_ui(skills):
     def on_clear_history():
         agent.clear_history()
 
-    with gr.Blocks(title="Ava", css="footer {display: none !important}") as demo:
+    with gr.Blocks(
+        title="Ava",
+        css="footer {display: none !important} .gradio-container > .flex.flex-wrap {display: none !important}",
+        analytics_enabled=False,
+    ) as demo:
 
         # Voice — clean, just the WebRTC stream
         Stream(
