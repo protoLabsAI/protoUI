@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 _GATEWAY_URL = os.environ.get("OPENAI_BASE_URL", os.environ.get("LLM_URL", "http://gateway:4000/v1"))
 _GATEWAY_KEY = os.environ.get("OPENAI_API_KEY", os.environ.get("LLM_API_KEY", ""))
-_MODEL = os.environ.get("AVA_CHAT_MODEL", os.environ.get("LLM_SERVED_NAME", "claude-sonnet-4-6"))
+_MODEL = os.environ.get("AVA_CHAT_MODEL", "protolabs/ava")
 
 _SOUL_PATH = Path(__file__).parent.parent / "config" / "SOUL.md"
 _soul_cache: str | None = None
