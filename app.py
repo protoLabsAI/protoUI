@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 
 os.environ.setdefault("HF_HOME", os.environ.get("MODEL_DIR", "/models"))
@@ -32,6 +33,7 @@ from fastrtc.reply_on_pause import AlgoOptions
 
 from skills.loader import load_skills
 from voice.agent import VoiceAgent, VoiceConfig
+from voice.llm import a2a_send
 from voice.stt import get_stt
 from voice.tts import get_kokoro, list_voices
 
@@ -292,6 +294,44 @@ def build_ui(skills):
         agent.clear_history()
 
     # ------------------------------------------------------------------
+    # Text chat state
+    # ------------------------------------------------------------------
+    _chat_conversation_id = str(uuid.uuid4())
+    _SLASH_HELP = (
+        "**Available slash commands:**\n"
+        "- `/clear` — clear chat history\n"
+        "- `/help` — show this help message"
+    )
+
+    def handle_chat(message: str, history: list[list[str | None]]) -> tuple[str, list[list[str | None]]]:
+        """Process a text chat message or slash command."""
+        nonlocal _chat_conversation_id
+        message = message.strip()
+        if not message:
+            return "", history
+
+        # Slash command dispatch
+        if message.startswith("/"):
+            cmd = message.split()[0].lower()
+            if cmd == "/clear":
+                _chat_conversation_id = str(uuid.uuid4())
+                return "", []
+            elif cmd == "/help":
+                history = history + [[message, _SLASH_HELP]]
+                return "", history
+            else:
+                history = history + [[message, f"Unknown command `{cmd}`. Type `/help` for available commands."]]
+                return "", history
+
+        # Regular message — route through A2A
+        response = a2a_send(
+            text=message,
+            conversation_id=_chat_conversation_id,
+        )
+        history = history + [[message, response]]
+        return "", history
+
+    # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
     with gr.Blocks(
@@ -302,38 +342,73 @@ def build_ui(skills):
         # Header
         gr.Markdown("## protoVoice")
 
-        # Wake word input — shown only when mode = wake_word
-        wake_word_box = gr.Textbox(
-            label="Trigger phrase",
-            placeholder="e.g. Hey Proto",
-            visible=False,
-            interactive=True,
-            max_lines=1,
-        )
+        with gr.Tabs():
+            # ---------------------------------------------------------------
+            # Tab 1: Voice
+            # ---------------------------------------------------------------
+            with gr.Tab("Voice"):
+                # Wake word input — shown only when mode = wake_word
+                wake_word_box = gr.Textbox(
+                    label="Trigger phrase",
+                    placeholder="e.g. Hey Proto",
+                    visible=False,
+                    interactive=True,
+                    max_lines=1,
+                )
 
-        # Main audio stream
-        Stream(
-            ReplyOnPause(
-                voice_handler,
-                algo_options=_algo_options,
-                output_sample_rate=24000,
-                can_interrupt=True,
-            ),
-            modality="audio",
-            mode="send-receive",
-            rtc_configuration={"iceServers": [{"urls": "stun:stun.l.google.com:19302"}]},
-        )
+                # Main audio stream
+                Stream(
+                    ReplyOnPause(
+                        voice_handler,
+                        algo_options=_algo_options,
+                        output_sample_rate=24000,
+                        can_interrupt=True,
+                    ),
+                    modality="audio",
+                    mode="send-receive",
+                    rtc_configuration={"iceServers": [{"urls": "stun:stun.l.google.com:19302"}]},
+                )
 
-        # Transcript panel — shown only when mode = transcribe
-        with gr.Column(visible=False, elem_id="transcript-col") as transcript_col:
-            transcript_box = gr.Textbox(
-                label="Transcript",
-                lines=10,
-                max_lines=20,
-                interactive=False,
-                show_copy_button=True,
-            )
-            clear_transcript_btn = gr.Button("Clear transcript", size="sm", variant="secondary")
+                # Transcript panel — shown only when mode = transcribe
+                with gr.Column(visible=False, elem_id="transcript-col") as transcript_col:
+                    transcript_box = gr.Textbox(
+                        label="Transcript",
+                        lines=10,
+                        max_lines=20,
+                        interactive=False,
+                        show_copy_button=True,
+                    )
+                    clear_transcript_btn = gr.Button("Clear transcript", size="sm", variant="secondary")
+
+            # ---------------------------------------------------------------
+            # Tab 2: Text Chat
+            # ---------------------------------------------------------------
+            with gr.Tab("Chat"):
+                chatbot = gr.Chatbot(
+                    label="Text Chat",
+                    height=500,
+                    show_copy_button=True,
+                )
+                with gr.Row():
+                    chat_input = gr.Textbox(
+                        placeholder="Type a message or /help for slash commands…",
+                        show_label=False,
+                        scale=9,
+                        max_lines=3,
+                        autofocus=True,
+                    )
+                    chat_send_btn = gr.Button("Send", scale=1, variant="primary")
+
+                chat_send_btn.click(
+                    fn=handle_chat,
+                    inputs=[chat_input, chatbot],
+                    outputs=[chat_input, chatbot],
+                )
+                chat_input.submit(
+                    fn=handle_chat,
+                    inputs=[chat_input, chatbot],
+                    outputs=[chat_input, chatbot],
+                )
 
         # Settings sidebar — native Gradio drawer
         with gr.Sidebar(label="Settings", open=False, position="right"):
