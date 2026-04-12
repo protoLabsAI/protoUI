@@ -234,23 +234,27 @@ def build_ui(skills):
             rtc_configuration={"iceServers": [{"urls": "stun:stun.l.google.com:19302"}]},
         )
 
-        # Settings sidebar
-        with gr.Sidebar(label="Settings", open=False, position="right"):
-            gr.Markdown("**Mode**")
-            mode_dd = gr.Dropdown(choices=mode_choices, value="chat", show_label=False, interactive=True)
+        # Sidebar — chat + settings
+        with gr.Sidebar(label="Chat", open=False, position="right"):
+            chatbot = gr.Chatbot(type="messages", height=400, show_label=False)
+            with gr.Row():
+                chat_input = gr.Textbox(placeholder="Type a message…", show_label=False, scale=9, max_lines=3)
+                send_btn = gr.Button("Send", scale=1, variant="primary")
 
-            gr.Markdown("**Voice**")
-            voice_dd = gr.Dropdown(choices=all_voices, value=KOKORO_VOICE, label="TTS voice", interactive=True)
+            send_btn.click(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
+            chat_input.submit(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
 
-            gr.Markdown("**LLM**")
-            llm_url_box = gr.Textbox(label="Voice LLM URL", value=LLM_URL, interactive=True, max_lines=1)
-            llm_model_box = gr.Textbox(label="Voice model", value=LLM_SERVED_NAME, interactive=True, max_lines=1)
-            llm_api_key_box = gr.Textbox(label="API key", value=LLM_API_KEY, type="password", interactive=True, max_lines=1)
-            temp_slider = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Temperature")
-            tokens_slider = gr.Slider(50, 500, value=150, step=25, label="Max tokens")
+            with gr.Accordion("Voice Settings", open=False):
+                mode_dd = gr.Dropdown(choices=mode_choices, value="chat", label="Mode", interactive=True)
+                voice_dd = gr.Dropdown(choices=all_voices, value=KOKORO_VOICE, label="TTS voice", interactive=True)
+                temp_slider = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="Temperature")
+                tokens_slider = gr.Slider(50, 500, value=150, step=25, label="Max tokens")
+                clear_history_btn = gr.Button("Clear voice history", size="sm", variant="secondary")
 
-            gr.Markdown("**Session**")
-            clear_history_btn = gr.Button("Clear voice history", size="sm", variant="secondary")
+            with gr.Accordion("LLM", open=False):
+                llm_url_box = gr.Textbox(label="Voice LLM URL", value=LLM_URL, interactive=True, max_lines=1)
+                llm_model_box = gr.Textbox(label="Model", value=LLM_SERVED_NAME, interactive=True, max_lines=1)
+                llm_api_key_box = gr.Textbox(label="API key", value=LLM_API_KEY, type="password", interactive=True, max_lines=1)
 
         # Sidebar event wiring
         mode_dd.change(fn=on_mode_change, inputs=[mode_dd], outputs=[voice_dd, temp_slider, tokens_slider])
@@ -261,16 +265,6 @@ def build_ui(skills):
         llm_model_box.change(fn=lambda v: setattr(_config, "model", v.strip()), inputs=[llm_model_box])
         llm_api_key_box.change(fn=lambda v: setattr(_config, "api_key", v.strip()), inputs=[llm_api_key_box])
         clear_history_btn.click(fn=on_clear_history)
-
-        # Text chat — collapsible, hidden by default
-        with gr.Accordion("Chat", open=False):
-            chatbot = gr.Chatbot(type="messages", height=400, show_label=False)
-            with gr.Row():
-                chat_input = gr.Textbox(placeholder="Type a message…", show_label=False, scale=9, max_lines=3)
-                send_btn = gr.Button("Send", scale=1, variant="primary")
-
-            send_btn.click(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
-            chat_input.submit(fn=handle_chat, inputs=[chat_input, chatbot], outputs=[chat_input, chatbot])
 
     return demo
 
