@@ -1,0 +1,9 @@
+{
+  "name": "ava",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ava standalone voice + text agent",
+  "scripts": {
+    "typecheck": "python3 -m py_compile app.py voices.py skills/__init__.py skills/loader.py skills/models.py voice/__init__.py voice/agent.py voice/chunker.py voice/llm.py voice/react_agent.py voice/stt.py voice/tts.py && echo 'Python syntax check passed'"
+  }
+}
