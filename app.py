@@ -277,13 +277,22 @@ fastapi_app = FastAPI(title="Ava")
 def _build_agent_card(host: str) -> dict:
     return {
         "name": "ava",
-        "description": "Conversational protoAgent — voice + text chat, suggests delegations when action is needed.",
-        "url": f"http://{host}", "version": "0.2.0",
+        "description": "Chief-of-staff protoAgent — conversational hub with voice, text chat, system health, and delegation authority.",
+        "url": f"http://{host}", "version": "0.3.0",
         "provider": {"organization": "protoLabsAI"},
         "capabilities": {"streaming": False},
         "defaultInputModes": ["text/plain"], "defaultOutputModes": ["text/markdown"],
-        "skills": [{"id": "chat", "name": "Chat", "description": "Free-form conversation."}],
-        "security": [],
+        "skills": [
+            {"id": "chat", "name": "Chat", "description": "Free-form conversation with web search, calculator, and delegation."},
+            {"id": "sitrep", "name": "Sitrep", "description": "System status report — board state, CI health, open incidents."},
+            {"id": "board_health", "name": "Board Health", "description": "Triage blocked features and board health."},
+            {"id": "manage_feature", "name": "Manage Feature", "description": "Create, update, or prioritize features on the board."},
+            {"id": "bug_triage", "name": "Bug Triage", "description": "Triage a bug report and file on the board."},
+        ],
+        "securitySchemes": {
+            "apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+        },
+        "security": [{"apiKey": []}],
     }
 
 @fastapi_app.get("/.well-known/agent.json")
@@ -292,8 +301,17 @@ async def agent_card(request: Request):
     return JSONResponse(content=_build_agent_card(request.headers.get("host", f"ava:{PORT}")),
                         headers={"Cache-Control": "public, max-age=60"})
 
+_A2A_API_KEY = os.environ.get("A2A_API_KEY", "")
+
 @fastapi_app.post("/a2a")
 async def a2a_handler(request: Request):
+    if _A2A_API_KEY:
+        provided = request.headers.get("X-API-Key", "")
+        if provided != _A2A_API_KEY:
+            return JSONResponse(
+                content={"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Unauthorized"}},
+                status_code=401,
+            )
     try:
         body = await request.json()
     except Exception:
