@@ -33,7 +33,7 @@ from fastrtc.reply_on_pause import AlgoOptions
 
 from skills.loader import load_skills
 from voice.agent import VoiceAgent, VoiceConfig
-from voice.llm import a2a_send
+from chat.backend import chat as ava_chat
 from voice.stt import get_stt
 from voice.tts import get_kokoro, list_voices
 
@@ -323,11 +323,16 @@ def build_ui(skills):
                 history = history + [[message, f"Unknown command `{cmd}`. Type `/help` for available commands."]]
                 return "", history
 
-        # Regular message — route through A2A
-        response = a2a_send(
-            text=message,
-            conversation_id=_chat_conversation_id,
-        )
+        # Regular message — route through local LLM chat backend
+        # Convert Gradio history format [[user, assistant], ...] to messages format
+        chat_history = []
+        for turn in history:
+            if turn[0]:
+                chat_history.append({"role": "user", "content": turn[0]})
+            if turn[1]:
+                chat_history.append({"role": "assistant", "content": turn[1]})
+
+        response = ava_chat(message=message, history=chat_history)
         history = history + [[message, response]]
         return "", history
 
@@ -335,12 +340,12 @@ def build_ui(skills):
     # Layout
     # ------------------------------------------------------------------
     with gr.Blocks(
-        title="protoVoice",
+        title="Ava",
         css="#transcript-col { margin-top: 8px; }",
     ) as demo:
 
         # Header
-        gr.Markdown("## protoVoice")
+        gr.Markdown("## Ava")
 
         with gr.Tabs():
             # ---------------------------------------------------------------
@@ -529,6 +534,103 @@ def build_ui(skills):
 
 
 # ---------------------------------------------------------------------------
+# A2A JSON-RPC 2.0 handler — incoming dispatches from workstacean
+# ---------------------------------------------------------------------------
+
+def _build_agent_card(host: str) -> dict:
+    return {
+        "name": "ava",
+        "description": (
+            "Conversational protoAgent — thoughtful chat partner with no tools. "
+            "Suggests delegations to the right agent when action is needed."
+        ),
+        "url": f"http://{host}",
+        "version": "0.1.0",
+        "provider": {"organization": "protoLabsAI", "url": "https://github.com/protoLabsAI"},
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/markdown"],
+        "skills": [
+            {
+                "id": "chat",
+                "name": "Chat",
+                "description": "Free-form conversation — Ava is a thinking partner, not an executor.",
+                "tags": ["chat", "dialogue"],
+                "examples": ["hey ava, how are you?", "can you help me think through this?"],
+            },
+        ],
+        "securitySchemes": {"apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}},
+        "security": [],
+    }
+
+
+# Gradio exposes the underlying FastAPI app via demo.app — we mount
+# A2A routes there after build_ui() returns the demo object.
+def _mount_a2a_routes(app):
+    """Mount A2A JSON-RPC routes on the FastAPI/Starlette app."""
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    @app.get("/.well-known/agent.json")
+    @app.get("/.well-known/agent-card.json")
+    async def agent_card(request: Request):
+        host = request.headers.get("host", f"ava-agent:{PORT}")
+        return JSONResponse(
+            content=_build_agent_card(host),
+            headers={"Cache-Control": "public, max-age=60"},
+        )
+
+    @app.post("/a2a")
+    async def a2a_handler(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(content={
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            })
+
+        rpc_id = body.get("id")
+        method = body.get("method")
+
+        if method != "message/send":
+            return JSONResponse(content={
+                "jsonrpc": "2.0", "id": rpc_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}. Supported: message/send"},
+            })
+
+        parts = body.get("params", {}).get("message", {}).get("parts", [])
+        user_text = "\n".join(
+            p.get("text", "") for p in parts if (p.get("kind") or p.get("type")) == "text"
+        ).strip()
+
+        if not user_text:
+            return JSONResponse(content={
+                "jsonrpc": "2.0", "id": rpc_id,
+                "error": {"code": -32602, "message": "params.message.parts must contain a text part"},
+            })
+
+        context_id = body.get("params", {}).get("contextId", str(uuid.uuid4()))
+
+        logger.info(f'A2A message/send: "{user_text[:80]}{"…" if len(user_text) > 80 else ""}"')
+
+        response_text = ava_chat(message=user_text)
+
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "id": str(uuid.uuid4()),
+                "contextId": context_id,
+                "status": {"state": "completed"},
+                "artifacts": [{"artifactId": str(uuid.uuid4()), "parts": [{"kind": "text", "text": response_text}]}],
+            },
+        })
+
+    logger.info("A2A routes mounted: GET /.well-known/agent.json, POST /a2a")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -549,6 +651,9 @@ def main():
         logger.info(f"Loaded skills: {[s.name for s in skills]}")
 
     demo = build_ui(skills)
+
+    # Mount A2A routes on the underlying FastAPI/Starlette app
+    _mount_a2a_routes(demo.app)
 
     demo.launch(
         server_name="0.0.0.0",
