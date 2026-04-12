@@ -1,0 +1,8 @@
+{
+  "name": "protovoice",
+  "private": true,
+  "description": "Dev-tooling shim for protoVoice (Python project). Provides npm script hooks used by CI verification.",
+  "scripts": {
+    "typecheck": "python3 -m py_compile app.py voice/agent.py voice/llm.py voice/text_chat.py voice/stt.py voice/tts.py voice/chunker.py voice/react_agent.py skills/loader.py skills/models.py && echo 'Python syntax check passed'"
+  }
+}
